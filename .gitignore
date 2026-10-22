@@ -1,0 +1,5 @@
+out/
+build/
+toolchain/
+*.pyc
+.DS_Store

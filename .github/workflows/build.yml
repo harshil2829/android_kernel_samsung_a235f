@@ -1,0 +1,105 @@
+name: SM-A235F Kernel & Driver Compilation
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release Tag (e.g. v1.0)"
+        required: true
+        default: "v1.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      MAKEFLAGS: -j2
+      MALLOC_TRIM_THRESHOLD_: 131072
+      MALLOC_MMAP_THRESHOLD_: 131072
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure Swap Space
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          sudo fallocate -l 8G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=8192
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Set up Build Environment
+        run: |
+          sudo apt update -y
+          sudo apt install -y libncurses5-dev bc bison flex make gcc g++ git python3 zip unzip libssl-dev cpio libelf-dev libyaml-dev pkg-config device-tree-compiler wget tar xz-utils binutils-aarch64-linux-gnu lz4 curl
+
+      - name: Download Toolchains
+        run: |
+          mkdir -p toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchain/clang/host/linux-x86/clang-r383902
+          
+          echo "[+] Fetching GCC 4.9 toolchain..."
+          git clone --depth=1 https://github.com/Mizumo-prjkt/aarch64-linux-android-4.9.git toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 || \
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 || \
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+
+          echo "[+] Fetching Clang toolchain..."
+          if git clone --depth=1 https://github.com/Mizumo-prjkt/clang-r383902.git toolchain/clang/host/linux-x86/clang-r383902; then
+            echo "[✔] Cloned Mizumo clang-r383902 successfully"
+          elif wget --retry-connrefused --waitretry=3 --tries=5 -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r383902.tar.gz -O clang-r383902.tar.gz; then
+            tar -xzf clang-r383902.tar.gz -C toolchain/clang/host/linux-x86/clang-r383902
+            rm -f clang-r383902.tar.gz
+          else
+            echo "[!] Fallback: Cloning Clang mirror..."
+            git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6443078 toolchain/clang/host/linux-x86/clang-r383902
+          fi
+          
+          ./toolchain/clang/host/linux-x86/clang-r383902/bin/clang --version
+
+      - name: Set Environment Variable
+        run: |
+          echo "BUILD_KERNEL_VERSION=${{ github.event.inputs.tag }}" >> $GITHUB_ENV
+
+      - name: Compile Kernel and Drivers
+        run: |
+          ulimit -n 65536 || true
+          chmod +x build.sh build_external_module.sh flash_kernel.sh tools/dtc 2>/dev/null || true
+          bash build.sh
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-SM-A235F-${{ github.event.inputs.tag }}
+          path: |
+            build/*.tar
+            build/*.img
+            build/*.lz4
+            build/*.zip
+            build/*.sh
+
+      - name: Upload Driver Module Artifacts (.ko & .sh)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Drivers-SM-A235F-${{ github.event.inputs.tag }}
+          path: |
+            build/modules/*.ko
+            build/modules/*.sh
+
+      - name: Create or Update Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.tag }}
+          name: "Kernel-SM-A235F-${{ github.event.inputs.tag }}"
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "build/*.tar,build/*.img,build/*.lz4,build/*.zip,build/*.sh,build/modules/*.ko,build/modules/*.sh"
+          allowUpdates: true
+          replacesArtifacts: true
+          body: "Official KernelSU-enabled Custom Kernel, Odin AP Flashable TAR, AnyKernel3 Recovery ZIP, Boot Image, and MemKernel/RTDev external driver modules for Samsung Galaxy A23 (SM-A235F - Qualcomm Snapdragon 680 / SM6225)"
